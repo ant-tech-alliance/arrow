@@ -43,6 +43,10 @@ public class PlasmaClient implements ObjectStoreLink {
     this.conn = PlasmaClientJNI.connect(storeSocketName, managerSocketName, releaseDelay);
   }
 
+  public PlasmaClient(String storeSocketName, int releaseDelay) {
+    this.conn = PlasmaClientJNI.connect(storeSocketName, releaseDelay);
+  }
+
   // interface methods --------------------
 
   @Override

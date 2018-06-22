@@ -72,6 +72,17 @@ JNIEXPORT jlong JNICALL Java_org_apache_arrow_plasma_PlasmaClientJNI_connect(
   return reinterpret_cast<int64_t>(client);
 }
 
+JNIEXPORT jlong JNICALL Java_org_apache_arrow_plasma_PlasmaClientJNI_connect__Ljava_lang_String_2I
+  (JNIEnv *env, jclass, jstring store_socket_name, jint release_delay) {
+  const char* s_name = env->GetStringUTFChars(store_socket_name, nullptr);
+
+  plasma::PlasmaClient* client = new plasma::PlasmaClient();
+  ARROW_CHECK_OK(client->Connect(s_name,  release_delay));
+
+  env->ReleaseStringUTFChars(store_socket_name, s_name);
+  return reinterpret_cast<int64_t>(client);
+}
+
 JNIEXPORT void JNICALL Java_org_apache_arrow_plasma_PlasmaClientJNI_disconnect(
     JNIEnv* env, jclass cls, jlong conn) {
   plasma::PlasmaClient* client = reinterpret_cast<plasma::PlasmaClient*>(conn);

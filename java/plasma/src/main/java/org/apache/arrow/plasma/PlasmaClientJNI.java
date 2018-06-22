@@ -27,6 +27,8 @@ public class PlasmaClientJNI {
 
   native public static long connect(String store_socket_name, String manager_socket_name, int release_delay);
 
+  native public static long connect(String store_socket_name, int release_delay);
+
   native public static void disconnect(long conn);
 
   native public static ByteBuffer create(long conn, byte[] object_id, int size, byte[] metadata);
