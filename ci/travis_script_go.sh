@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -15,16 +17,23 @@
 # specific language governing permissions and limitations
 # under the License.
 
-brew "autoconf-archive"
-brew "automake"
-brew "boost", args: ["1.66.0"]
-brew "ccache"
-brew "cmake"
-brew "git"
-brew "gobject-introspection"
-brew "gtk-doc"
-brew "jemalloc"
-brew "libtool"
-brew "lua"
-brew "ninja"
-brew "wget"
+set -e
+
+GO_DIR=${TRAVIS_BUILD_DIR}/go/arrow
+
+pushd $GO_DIR
+
+go get -d -t -v ./...
+go install -v ./...
+
+echo "" > coverage.txt
+
+for d in $(go list ./... | grep -v vendor); do
+    go test -race -coverprofile=profile.out -covermode=atomic $d
+    if [ -f profile.out ]; then
+        cat profile.out >> coverage.txt
+        rm profile.out
+    fi
+done
+
+popd

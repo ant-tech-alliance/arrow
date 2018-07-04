@@ -15,16 +15,24 @@
 # specific language governing permissions and limitations
 # under the License.
 
-brew "autoconf-archive"
-brew "automake"
-brew "boost", args: ["1.66.0"]
-brew "ccache"
-brew "cmake"
-brew "git"
-brew "gobject-introspection"
-brew "gtk-doc"
-brew "jemalloc"
-brew "libtool"
-brew "lua"
-brew "ninja"
-brew "wget"
+class TestDecimalDataType < Test::Unit::TestCase
+  def test_type
+    data_type = Arrow::DecimalDataType.new(2, 0)
+    assert_equal(Arrow::Type::DECIMAL, data_type.id)
+  end
+
+  def test_to_s
+    data_type = Arrow::DecimalDataType.new(2, 0)
+    assert_equal("decimal(2, 0)", data_type.to_s)
+  end
+
+  def test_precision
+    data_type = Arrow::DecimalDataType.new(8, 2)
+    assert_equal(8, data_type.precision)
+  end
+
+  def test_scale
+    data_type = Arrow::DecimalDataType.new(8, 2)
+    assert_equal(2, data_type.scale)
+  end
+end

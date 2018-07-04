@@ -120,6 +120,16 @@ def test_column_to_pandas():
     assert series.iloc[0] == -10
 
 
+def test_chunked_array_to_pandas():
+    data = [
+        pa.array([-10, -5, 0, 5, 10])
+    ]
+    table = pa.Table.from_arrays(data, names=['a'])
+    array = table.column(0).data.to_pandas()
+    assert array.shape == (5,)
+    assert array[0] == -10
+
+
 def test_column_flatten():
     ty = pa.struct([pa.field('x', pa.int16()),
                     pa.field('y', pa.float32())])
@@ -301,6 +311,9 @@ def test_table_to_batches():
     assert_frame_equal(table.to_pandas(), expected_df)
     assert_frame_equal(pa.Table.from_batches(batches).to_pandas(),
                        expected_df)
+
+    table_from_iter = pa.Table.from_batches(iter([batch1, batch2, batch1]))
+    assert table.equals(table_from_iter)
 
 
 def test_table_basics():

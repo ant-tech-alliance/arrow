@@ -15,16 +15,13 @@
 # specific language governing permissions and limitations
 # under the License.
 
-brew "autoconf-archive"
-brew "automake"
-brew "boost", args: ["1.66.0"]
-brew "ccache"
-brew "cmake"
-brew "git"
-brew "gobject-introspection"
-brew "gtk-doc"
-brew "jemalloc"
-brew "libtool"
-brew "lua"
-brew "ninja"
-brew "wget"
+class TestDecimalArray < Test::Unit::TestCase
+  def test_value
+    data_type = Arrow::DecimalDataType.new(8,2)
+    builder = Arrow::Decimal128ArrayBuilder.new(data_type)
+    decimal = Arrow::Decimal128.new("23423445")
+    builder.append(decimal)
+    array = builder.finish
+    assert_equal("234234.45", array.format_value(0))
+  end
+end

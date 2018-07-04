@@ -95,6 +95,35 @@ cdef class ChunkedArray:
             else:
                 index -= self.chunked_array.chunk(j).get().length()
 
+    def to_pandas(self,
+                  c_bool strings_to_categorical=False,
+                  c_bool zero_copy_only=False,
+                  c_bool integer_object_nulls=False):
+        """
+        Convert the arrow::Column to a pandas.Series
+
+        Returns
+        -------
+        pandas.Series
+        """
+        cdef:
+            PyObject* out
+            PandasOptions options
+
+        options = PandasOptions(
+            strings_to_categorical=strings_to_categorical,
+            zero_copy_only=zero_copy_only,
+            integer_object_nulls=integer_object_nulls,
+            use_threads=False)
+
+        with nogil:
+            check_status(libarrow.ConvertChunkedArrayToPandas(
+                options,
+                self.sp_chunked_array,
+                self, &out))
+
+        return wrap_array_output(out)
+
     def slice(self, offset=0, length=None):
         """
         Compute zero-copy slice of this ChunkedArray
@@ -369,22 +398,10 @@ cdef class Column:
         -------
         pandas.Series
         """
-        cdef:
-            PyObject* out
-            PandasOptions options
-
-        options = PandasOptions(
+        values = self.data.to_pandas(
             strings_to_categorical=strings_to_categorical,
             zero_copy_only=zero_copy_only,
-            integer_object_nulls=integer_object_nulls,
-            use_threads=False)
-
-        with nogil:
-            check_status(libarrow.ConvertColumnToPandas(options,
-                                                        self.sp_column,
-                                                        self, &out))
-
-        values = wrap_array_output(out)
+            integer_object_nulls=integer_object_nulls)
         result = pd.Series(values, name=self.name)
 
         if isinstance(self.type, TimestampType):
@@ -1058,12 +1075,12 @@ cdef class Table:
     @staticmethod
     def from_batches(batches, Schema schema=None):
         """
-        Construct a Table from a list of Arrow RecordBatches
+        Construct a Table from a sequence or iterator of Arrow RecordBatches
 
         Parameters
         ----------
-        batches: list of RecordBatch
-            RecordBatch list to be converted, all schemas must be equal
+        batches: sequence or iterator of RecordBatch
+            Sequence of RecordBatch to be converted, all schemas must be equal
         schema : Schema, default None
             If not passed, will be inferred from the first RecordBatch
 
@@ -1081,7 +1098,7 @@ cdef class Table:
             c_batches.push_back(batch.sp_batch)
 
         if schema is None:
-            if len(batches) == 0:
+            if c_batches.size() == 0:
                 raise ValueError('Must pass schema, or at least '
                                  'one RecordBatch')
             c_schema = c_batches[0].get().schema()
