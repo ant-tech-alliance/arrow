@@ -75,6 +75,17 @@ std::unique_ptr<uint8_t[]> CreateObjectInfoBuffer(fb::ObjectInfoT* object_info) 
   return notification;
 }
 
+std::unique_ptr<uint8_t[]> create_queue_item_buffer(PlasmaQueueItemInfoT* item_info) {
+  flatbuffers::FlatBufferBuilder fbb;
+  auto message = CreatePlasmaQueueItemInfo(fbb, item_info);
+  fbb.Finish(message);
+  auto notification =
+      std::unique_ptr<uint8_t[]>(new uint8_t[sizeof(int64_t) + fbb.GetSize()]);
+  *(reinterpret_cast<int64_t*>(notification.get())) = fbb.GetSize();
+  memcpy(notification.get() + sizeof(int64_t), fbb.GetBufferPointer(), fbb.GetSize());
+  return notification;
+}
+
 ObjectTableEntry* GetObjectTableEntry(PlasmaStoreInfo* store_info,
                                       const ObjectID& object_id) {
   auto it = store_info->objects.find(object_id);

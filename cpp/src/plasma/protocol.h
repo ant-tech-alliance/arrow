@@ -32,6 +32,8 @@ using arrow::Status;
 
 using flatbuf::MessageType;
 using flatbuf::PlasmaError;
+using flatbuf::ObjectType;
+using flatbuf::PlasmaQueueItemInfoT;
 
 template <class T>
 bool VerifyFlatbuffer(T* object, uint8_t* data, size_t size) {
@@ -46,10 +48,10 @@ Status PlasmaReceive(int sock, MessageType message_type, std::vector<uint8_t>* b
 /* Plasma Create message functions. */
 
 Status SendCreateRequest(int sock, ObjectID object_id, int64_t data_size,
-                         int64_t metadata_size, int device_num);
+                         int64_t metadata_size, int device_num, ObjectType object_type);
 
 Status ReadCreateRequest(uint8_t* data, size_t size, ObjectID* object_id,
-                         int64_t* data_size, int64_t* metadata_size, int* device_num);
+                         int64_t* data_size, int64_t* metadata_size, int* device_num, ObjectType* object_type);
 
 Status SendCreateReply(int sock, ObjectID object_id, PlasmaObject* object,
                        PlasmaError error, int64_t mmap_size);
@@ -207,6 +209,79 @@ Status SendDataReply(int sock, ObjectID object_id, int64_t object_size,
 
 Status ReadDataReply(uint8_t* data, size_t size, ObjectID* object_id,
                      int64_t* object_size, int64_t* metadata_size);
+
+// PushQueue messages
+Status SendPushQueueItemRequest(int sock, ObjectID object_id, int64_t data_size);
+
+Status ReadPushQueueItemRequest(uint8_t* data, size_t size, ObjectID* object_id, int64_t* data_size);
+
+Status SendPushQueueItemReply(int sock, ObjectID object_id, uint64_t data_offset, uint64_t data_size,
+  uint64_t seq_id, int error_code);
+
+Status ReadPushQueueItemReply(uint8_t* data, size_t size, ObjectID* object_id,
+  uint64_t* data_offset, uint64_t* data_size, uint64_t* seq_id);
+
+// Subscribe one queue.
+Status ReadSubscribeQueueRequest(uint8_t* data, size_t size, ObjectID* object_id);
+
+// Subscribe all queues.
+Status SendSubscribeQueueRequest(int sock, const ObjectID &object_id);
+
+Status SendQueueItemInfo(int sock, ObjectID object_id, uint64_t seq_id, uint64_t offset, uint32_t data_size, bool should_notify_consumed);
+
+Status ReadQueueItemInfo(uint8_t* data, size_t size, PlasmaQueueItemInfoT* item_info);
+
+Status SendEvictQueueBlockRequest(int sock, ObjectID object_id, uint64_t seq_id, bool evict_without_client);
+
+Status ReadEvictQueueBlockRequest(uint8_t* data, size_t size, ObjectID * object_id, uint64_t*seq_id, bool* evict_without_client);
+
+Status SendEvictQueueBlockReply(int sock, bool evict_answer);
+
+Status ReadEvictQueueBlockReply(uint8_t* data, size_t size, bool* evict_answer);
+
+Status SendConsumedItemNotification(int sock, ObjectID object_id, uint64_t seq_id);
+
+Status ReadConsumedItemNotification(uint8_t* data, size_t size, ObjectID * object_id, uint64_t *seq_id);
+
+Status SendCreateQueueItemRequest(int sock, ObjectID object_id, uint64_t seq_id, int64_t data_size,
+                                  uint64_t timestamp);
+
+Status ReadCreateQueueItemRequest(uint8_t* data, size_t size, ObjectID* object_id, uint64_t* seq_id,
+                                  int64_t* data_size, uint64_t* timestamp);
+
+Status SendCreateQueueItemReply(int sock, ObjectID object_id, uint64_t seq_id,
+                                uint64_t data_offset, PlasmaError error_code);
+
+Status ReadCreateQueueItemReply(uint8_t* data, size_t size, ObjectID* object_id, uint64_t* seq_id,
+                               uint64_t* data_offset);
+
+
+Status SendSealQueueItemRequest(int sock, ObjectID object_id, uint64_t seq_id);
+Status ReadSealQueueItemRequest(uint8_t* data, size_t size, ObjectID* object_id,
+                                uint64_t* seq_id) ;
+Status SendSealQueueItemReply(int sock, ObjectID object_id, uint64_t seq_id, PlasmaError error);
+Status ReadSealQueueItemReply(uint8_t* data, size_t size, ObjectID* object_id, uint64_t* seq_id);
+
+
+Status SendCreateBatchRequest(int sock, const std::vector<ObjectID>& object_ids, std::vector<uint64_t>& data_sizes,
+                              ObjectType object_type, bool should_seal);
+
+Status ReadCreateBatchRequest(uint8_t* data, size_t size,
+                              std::vector<ObjectID>& object_ids,
+                              std::vector<uint64_t>& data_sizes,
+                              ObjectType* object_type,
+                              bool* should_seal);
+
+Status SendCreateBatchReply(int sock, std::vector<ObjectID>& object_ids,
+                            std::vector<PlasmaObject>& objects,
+                            PlasmaError error_code, 
+                            std::vector<int64_t>& mmap_sizes);
+
+Status ReadCreateBatchReply(uint8_t* data, size_t size,
+                            std::vector<ObjectID>& object_ids,
+                            std::vector<PlasmaObject>& plasma_objects,
+                            std::vector<int>& store_fds,
+                            std::vector<int64_t>& mmap_sizes);
 
 }  // namespace plasma
 

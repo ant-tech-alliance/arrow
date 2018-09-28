@@ -24,12 +24,14 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <queue>
 
 #include "plasma/common.h"
 #include "plasma/events.h"
 #include "plasma/eviction_policy.h"
 #include "plasma/plasma.h"
 #include "plasma/protocol.h"
+#include "plasma/plasma_queue.h"
 
 namespace plasma {
 
@@ -59,10 +61,41 @@ struct Client {
   int notification_fd;
 };
 
+struct SimpleQueueItemRecord {
+  SimpleQueueItemRecord() : seq_id(0), data_offset(0), data_size(0) {}
+  uint64_t seq_id;
+  uint64_t data_offset;
+  uint32_t data_size;
+};
+
+struct SimpleQueueData {
+  uint8_t* pointer;
+  uint64_t size;
+
+  std::queue<SimpleQueueItemRecord> queue;
+};
+
+// Information about the queue, including the notification fd,
+// last seal item and evict sequence id. Each queue has a record
+struct QueueRecord {
+  // Notification data of each queue
+  std::unordered_map<int, NotificationQueue> pending_queue_notifications;
+  // Save the last sealed item for reading queue
+  std::unordered_map<int, uint64_t> read_queue_seal;
+  // Record the sequence id which the client has read, evict the item whose id
+  // is smaller than every record value. The second part is first item sequence id
+  // of a block
+  std::unordered_map<int, uint64_t> client_last_read;
+
+  std::shared_ptr<PlasmaQueueWriter> queue_writer_;
+
+};
+
+//static const uint32_t QUEUE_BLOCK_SIZE = 1000;
+
 class PlasmaStore {
  public:
   using NotificationMap = std::unordered_map<int, NotificationQueue>;
-
   // TODO: PascalCase PlasmaStore methods.
   PlasmaStore(EventLoop* loop, int64_t system_memory, std::string directory,
               bool hugetlbfs_enabled);
@@ -83,6 +116,7 @@ class PlasmaStore {
   ///        device_num = 0 corresponds to the host,
   ///        device_num = 1 corresponds to GPU0,
   ///        device_num = 2 corresponds to GPU1, etc.
+  /// @param object_type Type of the object, current supported types are Default and Queue.
   /// @param client The client that created the object.
   /// @param result The object that has been created.
   /// @return One of the following error codes:
@@ -95,7 +129,9 @@ class PlasmaStore {
   ///    plasma_release.
   PlasmaError CreateObject(const ObjectID& object_id, int64_t data_size,
                            int64_t metadata_size, int device_num, Client* client,
-                           PlasmaObject* result);
+                           PlasmaObject* result, ObjectType object_type = ObjectType::Default);
+
+  int create_queue_item(const ObjectID& object_id, int64_t data_size, SimpleQueueItemRecord* new_record);
 
   /// Abort a created but unsealed object. If the client is not the
   /// creator, then the abort will fail.
@@ -161,6 +197,8 @@ class PlasmaStore {
   /// @param client The client making this request.
   void SubscribeToUpdates(Client* client);
 
+  void SubscribeToQueueUpdates(Client* client, const ObjectID& object_id);
+
   /// Connect a new client to the PlasmaStore.
   ///
   /// @param listener_sock The socket that is listening to incoming connections.
@@ -171,14 +209,17 @@ class PlasmaStore {
   /// @param client_fd The client file descriptor that is disconnected.
   void DisconnectClient(int client_fd);
 
-  NotificationMap::iterator SendNotifications(NotificationMap::iterator it);
+  void SendNotifications(int client_fd, std::unordered_map<int, NotificationQueue>& store_pending_notifications);
 
   Status ProcessMessage(Client* client);
 
  private:
+
   void PushNotification(ObjectInfoT* object_notification);
 
   void PushNotification(ObjectInfoT* object_notification, int client_fd);
+
+  void PushQueueNotification(const ObjectID& object_id, PlasmaQueueItemInfoT* item_info);
 
   void AddToClientObjectIds(const ObjectID& object_id, ObjectTableEntry* entry,
                             Client* client);
@@ -189,6 +230,10 @@ class PlasmaStore {
 
   int RemoveFromClientObjectIds(const ObjectID& object_id, ObjectTableEntry* entry,
                                 Client* client);
+
+  void EvictToQueueBlockCheck(const ObjectID& object_id, uint64_t seq_id, bool& evict_answer, bool evict_without_client);
+
+  void UpdateQueueReadSeq(Client* client, const ObjectID& object_id, uint64_t seq_id);
 
   /// Event loop of the plasma store.
   EventLoop* loop_;
@@ -216,6 +261,19 @@ class PlasmaStore {
 #ifdef PLASMA_GPU
   arrow::gpu::CudaDeviceManager* manager_;
 #endif
+  std::unordered_map<ObjectID, QueueRecord> queue_info_;
+/*
+  using QueueLastSealMap = std::unordered_map<int, uint64_t>;
+  // Client id (use file descriptor) and corresponding sequence id the client has read
+  using QueueEvictMap = std::unordered_map<int, uint64_t>;
+
+  std::unordered_map<ObjectID, NotificationMap> pending_queue_notifications_;
+  // Save the last sealed item for reading queue
+  std::unordered_map<ObjectID, QueueLastSealMap> read_queue_seal_;
+  // Record the sequence id which the client has read, evict the item whose id
+  // is smaller than every record value
+  std::unordered_map<ObjectID, QueueEvictMap> client_last_read_;
+*/
 };
 
 }  // namespace plasma

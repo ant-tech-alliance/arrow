@@ -103,15 +103,15 @@ Status PlasmaErrorStatus(fb::PlasmaError plasma_error) {
 // Create messages.
 
 Status SendCreateRequest(int sock, ObjectID object_id, int64_t data_size,
-                         int64_t metadata_size, int device_num) {
+                         int64_t metadata_size, int device_num, ObjectType object_type) {
   flatbuffers::FlatBufferBuilder fbb;
   auto message = fb::CreatePlasmaCreateRequest(fbb, fbb.CreateString(object_id.binary()),
-                                               data_size, metadata_size, device_num);
+                                           data_size, metadata_size, device_num, object_type);
   return PlasmaSend(sock, MessageType::PlasmaCreateRequest, &fbb, message);
 }
 
 Status ReadCreateRequest(uint8_t* data, size_t size, ObjectID* object_id,
-                         int64_t* data_size, int64_t* metadata_size, int* device_num) {
+                         int64_t* data_size, int64_t* metadata_size, int* device_num, ObjectType* object_type) {
   DCHECK(data);
   auto message = flatbuffers::GetRoot<fb::PlasmaCreateRequest>(data);
   DCHECK(VerifyFlatbuffer(message, data, size));
@@ -119,6 +119,7 @@ Status ReadCreateRequest(uint8_t* data, size_t size, ObjectID* object_id,
   *metadata_size = message->metadata_size();
   *object_id = ObjectID::from_binary(message->object_id()->str());
   *device_num = message->device_num();
+  *object_type = message->object_type();
   return Status::OK();
 }
 
@@ -699,6 +700,21 @@ Status SendSubscribeRequest(int sock) {
   return PlasmaSend(sock, MessageType::PlasmaSubscribeRequest, &fbb, message);
 }
 
+Status SendSubscribeQueueRequest(int sock, const ObjectID& object_id) {
+  flatbuffers::FlatBufferBuilder fbb;
+  auto message = fb::CreatePlasmaSubscribeQueueRequest(fbb, fbb.CreateString(object_id.binary()));
+  return PlasmaSend(sock, MessageType::PlasmaSubscribeQueueRequest, &fbb, message);
+}
+
+Status ReadSubscribeQueueRequest(uint8_t* data, size_t size, ObjectID* object_id) {
+  DCHECK(data);
+  auto message = flatbuffers::GetRoot<fb::PlasmaSubscribeQueueRequest>(data);
+  DCHECK(VerifyFlatbuffer(message, data, size));
+  DCHECK(message->object_id()->size() == sizeof(ObjectID));
+  *object_id = ObjectID::from_binary(message->object_id()->str());
+  return Status::OK();
+}
+
 // Data messages.
 
 Status SendDataRequest(int sock, ObjectID object_id, const char* address, int port) {
@@ -739,5 +755,342 @@ Status ReadDataReply(uint8_t* data, size_t size, ObjectID* object_id,
   *metadata_size = static_cast<int64_t>(message->metadata_size());
   return Status::OK();
 }
+
+// PushQueue messages
+
+Status SendPushQueueItemRequest(int sock, ObjectID object_id, int64_t data_size) {
+  flatbuffers::FlatBufferBuilder fbb;
+  auto message =
+      fb::CreatePlasmaPushQueueItemRequest(fbb, fbb.CreateString(object_id.binary()), data_size);
+  return PlasmaSend(sock, MessageType::PlasmaPushQueueItemRequest, &fbb, message);
+}
+
+Status ReadPushQueueItemRequest(uint8_t* data, size_t size, ObjectID* object_id,
+                         int64_t* data_size) {
+  DCHECK(data);
+  auto message = flatbuffers::GetRoot<fb::PlasmaPushQueueItemRequest>(data);
+  DCHECK(VerifyFlatbuffer(message, data, size));
+  *data_size = message->data_size();
+  *object_id = ObjectID::from_binary(message->object_id()->str());
+  return Status::OK();
+}
+
+Status SendPushQueueItemReply(int sock, ObjectID object_id, uint64_t data_offset, uint64_t data_size,
+  uint64_t seq_id, int error_code) {
+  flatbuffers::FlatBufferBuilder fbb;
+  auto object_string = fbb.CreateString(object_id.binary());
+
+  fb::PlasmaPushQueueItemReplyBuilder crb(fbb);
+  crb.add_error(static_cast<PlasmaError>(error_code));
+  crb.add_object_id(object_string);
+  crb.add_data_offset(data_offset);
+  crb.add_data_size(data_size);
+  crb.add_seq_id(seq_id);
+
+  auto message = crb.Finish();
+  return PlasmaSend(sock, MessageType::PlasmaPushQueueItemReply, &fbb, message);
+}
+
+Status ReadPushQueueItemReply(uint8_t* data, size_t size, ObjectID* object_id,
+  uint64_t* data_offset, uint64_t* data_size, uint64_t* seq_id) {
+
+  DCHECK(data);
+  auto message = flatbuffers::GetRoot<fb::PlasmaPushQueueItemReply>(data);
+  DCHECK(VerifyFlatbuffer(message, data, size));
+  *object_id = ObjectID::from_binary(message->object_id()->str());
+  *data_offset = message->data_offset();
+  *data_size = message->data_size();
+  *seq_id = message->seq_id();
+
+  return PlasmaErrorStatus(message->error());
+}
+
+// Queue item info messages.
+
+Status SendQueueItemInfo(int sock, ObjectID object_id, uint64_t seq_id, uint64_t offset, uint32_t data_size, bool should_notify_consumed) {
+   flatbuffers::FlatBufferBuilder fbb;
+   auto message =
+      fb::CreatePlasmaQueueItemInfo(fbb, fbb.CreateString(object_id.binary()), -1, seq_id, offset, data_size, should_notify_consumed);
+
+  return PlasmaSend(sock, MessageType::PlasmaQueueItemInfo, &fbb, message);
+}
+
+Status ReadQueueItemInfo(uint8_t* data, size_t size, fb::PlasmaQueueItemInfoT* item_info) {
+  DCHECK(data);
+  auto message = flatbuffers::GetRoot<fb::PlasmaQueueItemInfo>(data);
+  DCHECK(VerifyFlatbuffer(message, data, size));
+  item_info->object_id = message->object_id()->str();
+  item_info->segment_index = message->segment_index();
+  item_info->seq_id = message->seq_id();
+  item_info->data_offset = message->data_offset();
+  item_info->data_size = message->data_size();
+  item_info->should_notify_consumed = message->should_notify_consumed();
+
+  return Status::OK();
+}
+
+// Evict queue blocks message
+Status SendEvictQueueBlockRequest(int sock, ObjectID object_id, uint64_t seq_id, bool evict_without_client) {
+  flatbuffers::FlatBufferBuilder fbb;
+  auto message = fb::CreatePlasmaEvictQueueBlockRequest(fbb,
+            fbb.CreateString(object_id.binary()), seq_id, evict_without_client);
+  return PlasmaSend(sock, MessageType::PlasmaEvictQueueBlockRequest, &fbb, message);
+}
+
+Status ReadEvictQueueBlockRequest(uint8_t* data, size_t size, ObjectID * object_id,
+                                uint64_t*seq_id, bool *evict_without_client) {
+  auto message = flatbuffers::GetRoot<fb::PlasmaEvictQueueBlockRequest>(data);
+  *object_id = ObjectID::from_binary(message->object_id()->str());
+  *seq_id = message->seq_id();
+  *evict_without_client = message->evict_without_client();
+  return Status::OK();
+}
+
+Status SendEvictQueueBlockReply(int sock, bool evict_answer) {
+  flatbuffers::FlatBufferBuilder fbb;
+  auto message = fb::CreatePlasmaEvictReply(fbb, evict_answer);
+  return PlasmaSend(sock, MessageType::PlasmaEvictQueueBlockReply, &fbb, message);
+}
+
+Status ReadEvictQueueBlockReply(uint8_t* data, size_t size, bool* evict_answer) {
+  auto message = flatbuffers::GetRoot<fb::PlasmaEvictQueueBlockReply>(data);
+  *evict_answer = message->evict_answer();
+  return Status::OK();
+}
+
+// Reader send notification to the store
+Status SendConsumedItemNotification(int sock, ObjectID object_id, uint64_t seq_id) {
+  flatbuffers::FlatBufferBuilder fbb;
+  auto message = fb::CreatePlasmaConsumedItemNotification(fbb, fbb.CreateString(object_id.binary()), seq_id);
+  return PlasmaSend(sock, MessageType::PlasmaConsumedItemNotification, &fbb, message);
+}
+
+Status ReadConsumedItemNotification(uint8_t* data, size_t size, ObjectID * object_id, uint64_t *seq_id) {
+  auto message = flatbuffers::GetRoot<fb::PlasmaConsumedItemNotification>(data);
+  *object_id = ObjectID::from_binary(message->object_id()->str());
+  *seq_id = message->seq_id();
+  return Status::OK();
+}
+/*
+Status SendDisconnectClient(int sock) {
+  flatbuffers::FlatBufferBuilder fbb;
+  auto message = fb::CreatePlasmaDisconnectClient(fbb);
+  return PlasmaSend(sock, MessageType::PlasmaDisconnectClient, &fbb, message);
+}
+*/
+
+
+// CreateQueueItem messages.
+
+Status SendCreateQueueItemRequest(int sock, ObjectID object_id, uint64_t seq_id, int64_t data_size,
+                                  uint64_t timestamp) {
+  flatbuffers::FlatBufferBuilder fbb;
+  auto message = fb::CreatePlasmaCreateQueueItemRequest(fbb, fbb.CreateString(object_id.binary()),
+                                           seq_id, data_size, timestamp);
+  return PlasmaSend(sock, MessageType::PlasmaCreateQueueItemRequest, &fbb, message);
+}
+
+Status ReadCreateQueueItemRequest(uint8_t* data, size_t size, ObjectID* object_id, uint64_t* seq_id,
+                                  int64_t* data_size, uint64_t* timestamp) {
+  DCHECK(data);
+  auto message = flatbuffers::GetRoot<fb::PlasmaCreateQueueItemRequest>(data);
+  DCHECK(VerifyFlatbuffer(message, data, size));
+  *object_id = ObjectID::from_binary(message->object_id()->str());
+  *seq_id = message->seq_id();
+  *data_size = message->data_size();
+  *timestamp = message->timestamp();
+  return Status::OK();
+}
+
+Status SendCreateQueueItemReply(int sock, ObjectID object_id, uint64_t seq_id,
+                                uint64_t data_offset, PlasmaError error_code) {
+  flatbuffers::FlatBufferBuilder fbb;
+  auto object_string = fbb.CreateString(object_id.binary());
+  fb::PlasmaCreateQueueItemReplyBuilder crb(fbb);
+  crb.add_object_id(object_string);
+  crb.add_seq_id(seq_id);
+  crb.add_data_offset(data_offset);
+  crb.add_error(static_cast<PlasmaError>(error_code));
+
+  auto message = crb.Finish();
+  return PlasmaSend(sock, MessageType::PlasmaCreateQueueItemReply, &fbb, message);
+}
+
+Status ReadCreateQueueItemReply(uint8_t* data, size_t size, ObjectID* object_id, uint64_t* seq_id,
+                               uint64_t* data_offset) {
+  DCHECK(data);
+  auto message = flatbuffers::GetRoot<fb::PlasmaCreateQueueItemReply>(data);
+  DCHECK(VerifyFlatbuffer(message, data, size));
+  *object_id = ObjectID::from_binary(message->object_id()->str());
+  *seq_id = message->seq_id();
+  *data_offset = message->data_offset();
+  return PlasmaErrorStatus(message->error());
+}
+
+// SealQueueItemQueueItem messages.
+
+Status SendSealQueueItemRequest(int sock, ObjectID object_id, uint64_t seq_id) {
+  flatbuffers::FlatBufferBuilder fbb;
+  auto message = fb::CreatePlasmaSealQueueItemRequest(fbb, fbb.CreateString(object_id.binary()),
+                                             seq_id);
+  return PlasmaSend(sock, MessageType::PlasmaSealQueueItemRequest, &fbb, message);
+}
+
+Status ReadSealQueueItemRequest(uint8_t* data, size_t size, ObjectID* object_id,
+                                uint64_t* seq_id) {
+  DCHECK(data);
+  auto message = flatbuffers::GetRoot<fb::PlasmaSealQueueItemRequest>(data);
+  DCHECK(VerifyFlatbuffer(message, data, size));
+  *object_id = ObjectID::from_binary(message->object_id()->str());
+  *seq_id = message->seq_id();
+  return Status::OK();
+}
+
+Status SendSealQueueItemReply(int sock, ObjectID object_id, uint64_t seq_id, PlasmaError error) {
+  flatbuffers::FlatBufferBuilder fbb;
+  auto message =
+      fb::CreatePlasmaSealQueueItemReply(fbb, fbb.CreateString(object_id.binary()), seq_id, error);
+  return PlasmaSend(sock, MessageType::PlasmaSealQueueItemReply, &fbb, message);
+}
+
+Status ReadSealQueueItemReply(uint8_t* data, size_t size, ObjectID* object_id, uint64_t* seq_id) {
+  DCHECK(data);
+  auto message = flatbuffers::GetRoot<fb::PlasmaSealQueueItemReply>(data);
+  DCHECK(VerifyFlatbuffer(message, data, size));
+  *object_id = ObjectID::from_binary(message->object_id()->str());
+  *seq_id = message->seq_id();
+  return PlasmaErrorStatus(message->error());
+}
+
+
+// Create messages.
+
+Status SendCreateBatchRequest(int sock, const std::vector<ObjectID>& object_ids, std::vector<uint64_t>& data_sizes,
+                              ObjectType object_type, bool should_seal) {
+  flatbuffers::FlatBufferBuilder fbb;
+  auto message = fb::CreatePlasmaCreateBatchRequest(fbb, 
+      ToFlatbuffer(&fbb, object_ids.data(), object_ids.size()),
+      fbb.CreateVector(data_sizes),
+      object_type, should_seal);
+  return PlasmaSend(sock, MessageType::PlasmaCreateBatchRequest, &fbb, message);
+}
+
+Status ReadCreateBatchRequest(uint8_t* data, size_t size,
+                              std::vector<ObjectID>& object_ids,
+                              std::vector<uint64_t>& data_sizes,
+                              ObjectType* object_type,
+                              bool* should_seal) {
+  DCHECK(data);
+  auto message = flatbuffers::GetRoot<fb::PlasmaCreateBatchRequest>(data);
+  DCHECK(VerifyFlatbuffer(message, data, size));
+  for (uoffset_t i = 0; i < message->object_ids()->size(); ++i) {
+    auto object_id = message->object_ids()->Get(i)->str();
+    object_ids.push_back(ObjectID::from_binary(object_id));
+  }
+  for (uoffset_t i = 0; i < message->data_sizes()->size(); ++i) {
+    auto data_size = message->data_sizes()->Get(i);
+    data_sizes.push_back(data_size);
+  }
+  *object_type = message->object_type();
+  *should_seal = message->should_seal();
+  return Status::OK();
+}
+
+Status SendCreateBatchReply(int sock, std::vector<ObjectID>& object_ids,
+                            std::vector<PlasmaObject>& objects,
+                            PlasmaError error_code, 
+                            std::vector<int64_t>& mmap_sizes) {
+  flatbuffers::FlatBufferBuilder fbb;
+
+  std::vector<PlasmaObjectSpec> object_specs;
+  std::vector<int> store_fds;
+  for (int64_t i = 0; i < objects.size(); ++i) {
+    const PlasmaObject& object = objects[i];
+    object_specs.push_back(PlasmaObjectSpec(object.store_fd, object.data_offset,
+                                       object.data_size, object.metadata_offset,
+                                       object.metadata_size, object.device_num));
+    store_fds.push_back(object.store_fd);
+  }
+
+  auto message = fb::CreatePlasmaCreateBatchReply(
+      fbb, ToFlatbuffer(&fbb, object_ids.data(), object_ids.size()),
+      fbb.CreateVectorOfStructs(object_specs.data(), object_specs.size()),
+      error_code,
+      fbb.CreateVector(store_fds),
+      fbb.CreateVector(mmap_sizes));
+  return PlasmaSend(sock, MessageType::PlasmaCreateBatchReply, &fbb, message);
+}
+
+Status ReadCreateBatchReply(uint8_t* data, size_t size,
+                            std::vector<ObjectID>& object_ids,
+                            std::vector<PlasmaObject>& plasma_objects,
+                            std::vector<int>& store_fds,
+                            std::vector<int64_t>& mmap_sizes) {
+  DCHECK(data);
+  auto message = flatbuffers::GetRoot<fb::PlasmaCreateBatchReply>(data);
+  DCHECK(VerifyFlatbuffer(message, data, size));
+
+
+  auto num_objects = message->object_ids()->size();
+  object_ids.resize(num_objects);
+  for (uoffset_t i = 0; i < num_objects; ++i) {
+    object_ids[i] = ObjectID::from_binary(message->object_ids()->Get(i)->str());
+  }
+
+  plasma_objects.resize(num_objects);
+  for (uoffset_t i = 0; i < num_objects; ++i) {
+    const PlasmaObjectSpec* object = message->plasma_objects()->Get(i);
+    plasma_objects[i].store_fd = object->segment_index();
+    plasma_objects[i].data_offset = object->data_offset();
+    plasma_objects[i].data_size = object->data_size();
+    plasma_objects[i].metadata_offset = object->metadata_offset();
+    plasma_objects[i].metadata_size = object->metadata_size();
+  }
+  ARROW_CHECK(message->store_fds()->size() == message->mmap_sizes()->size());
+  for (uoffset_t i = 0; i < message->store_fds()->size(); i++) {
+    store_fds.push_back(message->store_fds()->Get(i));
+    mmap_sizes.push_back(message->mmap_sizes()->Get(i));
+  }
+
+  return PlasmaErrorStatus(message->error());
+}
+
+
+// Seal messages.
+/*
+Status SendSealBatchRequest(int sock, ObjectID object_id, unsigned char* digest) {
+  flatbuffers::FlatBufferBuilder fbb;
+  auto digest_string = fbb.CreateString(reinterpret_cast<char*>(digest), kDigestSize);
+  auto message = fb::CreatePlasmaSealBatchRequest(fbb, fbb.CreateString(object_id.binary()),
+                                             digest_string);
+  return PlasmaSend(sock, MessageType::PlasmaSealBatchRequest, &fbb, message);
+}
+
+Status ReadSealBatchRequest(uint8_t* data, size_t size, ObjectID* object_id,
+                       unsigned char* digest) {
+  DCHECK(data);
+  auto message = flatbuffers::GetRoot<fb::PlasmaSealBatchRequest>(data);
+  DCHECK(VerifyFlatbuffer(message, data, size));
+  *object_id = ObjectID::from_binary(message->object_id()->str());
+  ARROW_CHECK(message->digest()->size() == kDigestSize);
+  memcpy(digest, message->digest()->data(), kDigestSize);
+  return Status::OK();
+}
+
+Status SendSealBatchReply(int sock, ObjectID object_id, PlasmaError error) {
+  flatbuffers::FlatBufferBuilder fbb;
+  auto message =
+      fb::CreatePlasmaSealBatchReply(fbb, fbb.CreateString(object_id.binary()), error);
+  return PlasmaSend(sock, MessageType::PlasmaSealBatchReply, &fbb, message);
+}
+
+Status ReadSealBatchReply(uint8_t* data, size_t size, ObjectID* object_id) {
+  DCHECK(data);
+  auto message = flatbuffers::GetRoot<fb::PlasmaSealBatchReply>(data);
+  DCHECK(VerifyFlatbuffer(message, data, size));
+  *object_id = ObjectID::from_binary(message->object_id()->str());
+  return PlasmaErrorStatus(message->error());
+}
+*/
 
 }  // namespace plasma

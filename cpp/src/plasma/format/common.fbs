@@ -36,4 +36,5 @@ table ObjectInfo {
   digest: string;
   // Specifies if this object was deleted or added.
   is_deletion: bool;
+  type: int;
 }

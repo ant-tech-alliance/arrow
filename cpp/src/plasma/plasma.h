@@ -39,6 +39,7 @@
 #include "arrow/util/macros.h"
 #include "plasma/common.h"
 #include "plasma/common_generated.h"
+#include "plasma/plasma_generated.h"
 
 #ifdef PLASMA_GPU
 using arrow::gpu::CudaIpcMemHandle;
@@ -143,6 +144,8 @@ ObjectTableEntry* GetObjectTableEntry(PlasmaStoreInfo* store_info,
 int WarnIfSigpipe(int status, int client_sock);
 
 std::unique_ptr<uint8_t[]> CreateObjectInfoBuffer(flatbuf::ObjectInfoT* object_info);
+
+std::unique_ptr<uint8_t[]> create_queue_item_buffer(flatbuf::PlasmaQueueItemInfoT* item_info);
 
 }  // namespace plasma
 

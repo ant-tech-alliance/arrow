@@ -72,6 +72,27 @@ enum MessageType:long {
   // object store that requested the data. For each transfer, multiple
   // reply messages get sent. Each one contains a fixed number of bytes.
   PlasmaDataReply,
+  // create batch.
+  PlasmaCreateBatchRequest,
+  PlasmaCreateBatchReply,
+  PlasmaSealBatchRequest,
+  PlasmaSealBatchReply,  
+  // plasma queue2.
+  PlasmaCreateQueueItemRequest,
+  PlasmaCreateQueueItemReply,
+  PlasmaSealQueueItemRequest,
+  PlasmaSealQueueItemReply,
+  // Plasma queue.
+  PlasmaSubscribeQueueRequest,
+  PlasmaQueueItemInfo,
+  PlasmaQueuePushItem,
+  PlasmaPushQueueItemRequest,
+  PlasmaPushQueueItemReply,
+  // Writer request try to evict some queue blocks
+  PlasmaEvictQueueBlockRequest,
+  PlasmaEvictQueueBlockReply,
+  // Reader request tell plasma store which items has been consumed
+  PlasmaConsumedItemNotification,
   // Object notifications.
   PlasmaNotification
 }
@@ -109,6 +130,13 @@ struct PlasmaObjectSpec {
   device_num: int;
 }
 
+enum ObjectType:int {
+  // Normal object.
+  Default,
+  // Queue source object.
+  Queue
+}
+
 table PlasmaCreateRequest {
   // ID of the object to be created.
   object_id: string;
@@ -118,6 +146,8 @@ table PlasmaCreateRequest {
   metadata_size: ulong;
   // Device to create buffer on.
   device_num: int;
+  // Type of the object.
+  object_type: ObjectType;
 }
 
 table CudaHandle {
@@ -347,4 +377,153 @@ table PlasmaDataReply {
   object_size: ulong;
   // Size of the metadata in bytes.
   metadata_size: ulong;
+}
+
+table PlasmaNewItemRequest {
+  // ID of the object that will be sent.
+  object_id: string;
+  // SeqID of this item.
+  seq_id: ulong;
+  // New item in the queue.
+  data: string;
+  // Current block offset to the beginning of the queue.
+  block_offset: ulong;
+}
+
+table PlasmaPushQueueItemRequest {
+  // ID of the object to be created.
+  object_id: string;
+  // The size of the object's data in bytes.
+  data_size: ulong;
+}
+
+table PlasmaPushQueueItemReply {
+  // ID of the object that was created.
+  object_id: string;
+  // The offset in bytes in the memory mapped file of the data.
+  data_offset: ulong;
+  // The size in bytes of the data.
+  data_size: ulong;
+  // SeqID for this item.
+  seq_id: ulong;
+  // Error that occurred for this call.
+  error: PlasmaError;
+}
+
+table PlasmaCreateQueueItemRequest {
+  // ID of the queue object.
+  object_id: string;
+  // SeqID of this item.
+  seq_id: ulong;
+  // The size of the queue item's data in bytes.
+  data_size: ulong;
+  // TimeStamp of this item.
+  timestamp: ulong;
+}
+
+table PlasmaCreateQueueItemReply {
+  // ID of the object that was created.
+  object_id: string;
+  // SeqID for this item.
+  seq_id: ulong;
+  // The offset in bytes in the memory mapped file of the data.
+  data_offset: ulong;
+  // Error that occurred for this call.
+  error: PlasmaError;
+}
+
+table PlasmaSealQueueItemRequest {
+  // ID of the object to be sealed.
+  object_id: string;
+  // SeqID of this item.
+  seq_id: ulong;
+}
+
+table PlasmaSealQueueItemReply {
+  // ID of the object that was sealed.
+  object_id: string;
+  // SeqID of this item.
+  seq_id: ulong;  
+  // Error code.
+  error: PlasmaError;
+}
+
+// Subscribe queue
+table PlasmaSubscribeQueueRequest {
+  object_id: string;
+}
+
+table PlasmaQueueItemInfo {
+  object_id: string;
+  // Index of the memory segment (= memory mapped file) that
+  // this queue item is allocated in.
+  segment_index: int;
+  // Sequence ID for queue item.
+  seq_id: ulong;
+  // The offset in bytes in the memory mapped file of the data.
+  data_offset: ulong;
+  // The size in bytes of the data.
+  data_size: ulong;
+  // Indicate whether this item should be evicted, reader
+  // should notify store the consumed item if this is true
+  should_notify_consumed: bool;
+}
+
+table PlasmaEvictQueueBlockRequest {
+  // The sequence id try to evict
+  object_id: string;
+  seq_id: ulong;
+  evict_without_client: bool;
+}
+
+table PlasmaEvictQueueBlockReply {
+  // true indicates ok, otherwise we can't evict the block yet
+  evict_answer: bool;
+}
+
+// queue item reader tell the plasma store which data we are reading
+table PlasmaConsumedItemNotification {
+  object_id: string;
+  seq_id: ulong;
+}
+
+
+table PlasmaCreateBatchRequest {
+  // ID of the object to be created.
+  object_ids: [string];
+  // The size of the object's data in bytes.
+  data_sizes: [ulong];
+  // Type of the object.
+  object_type: ObjectType;
+  // if seal.
+  should_seal: bool;
+}
+
+table PlasmaCreateBatchReply {
+  // ID of the object that was created.
+  object_ids: [string];
+  // The object that is returned with this reply.
+  plasma_objects: [PlasmaObjectSpec];
+  // Error that occurred for this call.
+  error: PlasmaError;
+  // The file descriptor in the store that corresponds to the file descriptor
+  // being sent to the client right after this message.
+  store_fds: [int];
+  // The size in bytes of the segment for the store file descriptor (needed to
+  // call mmap).
+  mmap_sizes: [long];
+}
+
+table PlasmaSealBatchRequest {
+  // ID of the object to be sealed.
+  object_ids: [string];
+  // Hash of the object data.
+  digests: [string];
+}
+
+table PlasmaSealBatchReply {
+  // ID of the object that was sealed.
+  object_ids: [string];
+  // Error code.
+  error: PlasmaError;
 }
