@@ -23,8 +23,8 @@ from libcpp cimport bool as c_bool, nullptr
 from libcpp.memory cimport shared_ptr, unique_ptr, make_shared
 from libcpp.string cimport string as c_string
 from libcpp.vector cimport vector as c_vector
+from libc.stdint cimport int64_t, uint8_t, uintptr_t, uint32_t, uint64_t
 from libcpp.unordered_map cimport unordered_map
-from libc.stdint cimport int64_t, uint8_t, uintptr_t
 from cython.operator cimport dereference as deref, preincrement as inc
 from cpython.pycapsule cimport *
 
@@ -144,6 +144,26 @@ cdef extern from "plasma/client.h" nogil:
 
         CStatus Delete(const c_vector[CUniqueID] object_ids)
 
+        # Interfaces that are related to plasma queue.
+        CStatus CreateQueue(const CUniqueID& object_id, int64_t data_size, const shared_ptr[CBuffer]* data,
+                            int device_num, c_bool evict_without_client, c_bool recreate_queue)
+
+        CStatus ReconstructQueue(const CUniqueID& object_id)
+
+        CStatus GetQueue(const CUniqueID& object_id, int64_t timeout_ms,
+                         int* fd)
+
+        CStatus CreateQueueItem(const CUniqueID& object_id, uint32_t data_size,
+                                shared_ptr[CBuffer]* data,
+                                uint64_t& seq_id, c_bool& is_first_item, uint64_t timestamp)
+
+        CStatus SealQueueItem(const CUniqueID& object_id, uint64_t seq_id,
+                              shared_ptr[CBuffer] data, c_bool is_first_item)
+
+        CStatus GetQueueItem(const CUniqueID& object_id,
+                             CObjectBuffer* object_buffer, uint64_t& seq_id,
+                             uint64_t& timestamp)
+
 cdef extern from "plasma/client.h" nogil:
 
     cdef struct CObjectBuffer" plasma::ObjectBuffer":
@@ -164,8 +184,7 @@ cdef class ObjectID:
         CUniqueID data
 
     def __cinit__(self, object_id):
-        if (not isinstance(object_id, bytes) or
-                len(object_id) != CUniqueID.size()):
+        if not isinstance(object_id, bytes) or len(object_id) != 20:
             raise ValueError("Object ID must by 20 bytes,"
                              " is " + str(object_id))
         self.data = CUniqueID.from_binary(object_id)
@@ -261,6 +280,51 @@ cdef class PlasmaBuffer(Buffer):
         self.client._release(self.object_id)
 
 
+cdef class PlasmaQueueItemBuffer(Buffer):
+       """
+       This is the type returned by calls to get with a PlasmaClient.
+
+       We define our own class instead of directly returning a buffer object so
+       that we can add a custom destructor which notifies Plasma that the object
+       is no longer being used, so the memory in the Plasma store backing the
+       object can potentially be freed.
+
+       Attributes
+       ----------
+       object_id : ObjectID
+           The ID of the object in the buffer.
+       client : PlasmaClient
+           The PlasmaClient that we use to communicate with the store and manager.
+       """
+
+       cdef:
+           ObjectID object_id
+           uint64_t seq_id
+           PlasmaClient client
+
+       @staticmethod
+       cdef PlasmaQueueItemBuffer create(ObjectID object_id, uint64_t seq_id, PlasmaClient client,
+                                 const shared_ptr[CBuffer]& buffer):
+           cdef PlasmaQueueItemBuffer self = PlasmaQueueItemBuffer.__new__(PlasmaQueueItemBuffer)
+           self.object_id = object_id
+           self.seq_id = seq_id
+           self.client = client
+           self.init(buffer)
+           return self
+
+       def __init__(self):
+           raise TypeError("Do not call PlasmaBuffer's constructor directly, use "
+                        "`PlasmaClient.create` instead.")
+
+       def __dealloc__(self):
+           """
+           Notify Plasma that the object is no longer needed.
+
+           If the plasma client has been shut down, then don't do anything.
+           """
+           #self.client.release(self.object_id)
+
+
 cdef class PlasmaClient:
     """
     The PlasmaClient is used to interface with a plasma store and manager.
@@ -299,6 +363,13 @@ cdef class PlasmaClient:
         cdef shared_ptr[CBuffer] buffer
         buffer.reset(new CMutableBuffer(data, size))
         return PlasmaBuffer.create(object_id, self, buffer)
+
+    # XXX C++ API should instead expose some kind of CreateAuto()
+    cdef _make_mutable_plasma_queue_item_buffer(self, ObjectID object_id, uint64_t seq_id,
+                                                uint8_t* data, int64_t size):
+        cdef shared_ptr[CBuffer] buffer
+        buffer.reset(new CMutableBuffer(data, size))
+        return PlasmaQueueItemBuffer.create(object_id, seq_id, self, buffer)
 
     @property
     def store_socket_name(self):
@@ -439,6 +510,145 @@ cdef class PlasmaClient:
         serialized.write_to(stream)
         self.seal(target_id)
         return target_id
+
+    def create_queue(self, ObjectID queue_id=None, total_bytes=1024000, c_bool recreate=False):
+        """
+        Store a plasma queue into the object store.
+
+        Parameters
+        ----------
+        queue_id : ObjectID, default None
+            If this is provided, the specified object ID will be used to recreate the plasma queue
+        -------
+        """
+        """
+        Create a new buffer in the PlasmaStore for a particular object ID.
+        The returned buffer is unmutable as seal is called.
+
+        Raises
+        ------
+        PlasmaObjectExists
+            This exception is raised if the object could not be created because
+            there already is an object with the same ID in the plasma store.
+
+        PlasmaStoreFull: This exception is raised if the object could
+                not be created because the plasma store is unable to evict
+                enough objects to create room for it.
+        """
+        # Apply a buffer from plasma store for the plasma queue
+        
+        cdef ObjectID target_id = (queue_id if queue_id
+                                else ObjectID.from_random())
+        cdef shared_ptr[CBuffer] data
+        if recreate == False:
+            check_status(self.client.get().CreateQueue(target_id.data, 
+                                                    total_bytes, &data, 0, False, False))
+        else:
+        # Recreate the queue from plasma store
+            check_status(self.client.get().CreateQueue(target_id.data, 
+                                        total_bytes, &data, 0, False, True))
+
+    def push_queue(self, object value, ObjectID queue_id=None,
+            int memcopy_threads=6, serialization_context=None):
+        """
+        Push a Python value into the plasma queue.
+
+        Parameters
+        ----------
+        value : object
+            A Python object to store.
+        queue_id : ObjectID, default None
+            If this is provided, the specified object ID will be used to refer
+            to the plasma queue.
+        memcopy_threads : int, default 6
+            The number of threads to use to write the serialized object into
+            the object store for large objects.
+        serialization_context : pyarrow.SerializationContext, default None
+            Custom serialization and deserialization context.
+
+        """
+        cdef ObjectID target_id = (queue_id if queue_id
+                                   else ObjectID.from_random())
+        serialized = pyarrow.serialize(value, serialization_context)
+
+        # Return buffer from the plasma queue to write
+        cdef c_bool is_first_item = False
+        cdef uint64_t seq_id = 0
+        cdef shared_ptr[CBuffer] data
+        cdef uint64_t timestamp = -1
+        check_status(self.client.get().CreateQueueItem(target_id.data,
+            serialized.total_bytes, &data, seq_id, is_first_item, timestamp))
+        buffer = self._make_mutable_plasma_queue_item_buffer(target_id, seq_id,
+                                                data.get().mutable_data(),
+                                                serialized.total_bytes)
+
+        stream = pyarrow.FixedSizeBufferWriter(buffer)
+        stream.set_memcopy_threads(memcopy_threads)
+        serialized.write_to(stream)
+        with nogil:
+            check_status(self.client.get().SealQueueItem(target_id.data,
+                                                        seq_id, data, is_first_item))
+        
+    def get_queue(self, queue_id, timeout_ms=-1):
+        """
+        Subscribe the corresponding plasma queue.
+
+        Parameters
+        ----------
+        queue_id : ObjectID
+            Object ID associated to the plasma queue we get
+            from the store.
+        timeout_ms : int, default -1
+            The number of milliseconds that the get call should block before
+            timing out and returning. Pass -1 if the call should block and 0
+            if the call should return immediately.
+
+        Returns
+        -------
+        """
+
+        cdef ObjectID target_id = (queue_id if queue_id
+                                   else ObjectID.from_random())
+        cdef int nofify_fd
+        check_status(self.client.get().GetQueue(target_id.data,
+                                                   timeout_ms, &nofify_fd))
+
+    def read_queue(self, queue_id, index, timestamp, int timeout_ms=-1,
+            serialization_context=None):
+        """
+        Get one Python value from the plasma queue.
+
+        Parameters
+        ----------
+        queue_id : ObjectID
+            Object ID associated to the plasma queue we get
+            from the store.
+        timeout_ms : int, default -1
+            The number of milliseconds that the get call should block before
+            timing out and returning. Pass -1 if the call should block and 0
+            if the call should return immediately.
+        serialization_context : pyarrow.SerializationContext, default None
+            Custom serialization and deserialization context.
+
+        Returns
+        -------
+        object
+            Python value associated with the current index in the plasma queue,
+            and ObjectNotAvailable if the object was not available.
+        """
+
+        cdef ObjectID target_id = (queue_id if queue_id
+                                   else ObjectID.from_random())
+        cdef CObjectBuffer object_buffer
+        check_status(self.client.get().GetQueueItem(target_id.data,
+                                                    &object_buffer, index, timestamp))
+        buffer = pyarrow_wrap_buffer(object_buffer.data)
+        # buffer is None if this object was not available within the timeout
+        if buffer:
+            value = pyarrow.deserialize(buffer, serialization_context)
+            return value
+        else:
+            return ObjectNotAvailable
 
     def get(self, object_ids, int timeout_ms=-1, serialization_context=None):
         """

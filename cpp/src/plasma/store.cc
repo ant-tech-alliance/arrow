@@ -1,4 +1,4 @@
-// Licensed to the Apache Software Foundation (ASF) under one
+ // Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements.  See the NOTICE file
 // distributed with this work for additional information
 // regarding copyright ownership.  The ASF licenses this file
@@ -150,7 +150,8 @@ void PlasmaStore::AddToClientObjectIds(const ObjectID& object_id, ObjectTableEnt
 // Create a new object buffer in the hash table.
 PlasmaError PlasmaStore::CreateObject(const ObjectID& object_id, int64_t data_size,
                                       int64_t metadata_size, int device_num,
-                                      Client* client, PlasmaObject* result) {
+                                      Client* client, PlasmaObject* result,
+                                      ObjectType object_type) {
   ARROW_LOG(DEBUG) << "creating object " << object_id.hex();
   if (store_info_.objects.count(object_id) != 0) {
     // There is already an object with the same ID in the Plasma Store, so
@@ -223,6 +224,14 @@ PlasmaError PlasmaStore::CreateObject(const ObjectID& object_id, int64_t data_si
     result->ipc_handle = entry->ipc_handle;
   }
 #endif
+
+  if (object_type == ObjectType::Queue) {
+    queue_info_[object_id];
+
+    queue_info_[object_id].queue_writer_ = std::make_shared<PlasmaQueueWriter>(
+      entry->pointer, entry->data_size);
+  }
+
   store_info_.objects[object_id] = std::move(entry);
   result->store_fd = fd;
   result->data_offset = offset;
@@ -585,6 +594,13 @@ void PlasmaStore::DisconnectClient(int client_fd) {
     RemoveFromClientObjectIds(entry.first, entry.second, client);
   }
 
+  for (auto& entry: queue_info_) {
+    auto it = entry.second.client_last_read.find(client_fd);
+    if (it != entry.second.client_last_read.end()) {
+      entry.second.client_last_read.erase(it);
+    }
+  }
+
   if (client->notification_fd > 0) {
     // This client has subscribed for notifications.
     auto notify_fd = client->notification_fd;
@@ -609,10 +625,10 @@ void PlasmaStore::DisconnectClient(int client_fd) {
 ///
 /// @param it Iterator that points to the client to send the notification to.
 /// @return Iterator pointing to the next client.
-PlasmaStore::NotificationMap::iterator PlasmaStore::SendNotifications(
-    PlasmaStore::NotificationMap::iterator it) {
-  int client_fd = it->first;
-  auto& notifications = it->second.object_notifications;
+/// @param client_fd The client to send the notification to.
+void PlasmaStore::SendNotifications(int client_fd,
+  std::unordered_map<int, NotificationQueue>& store_pending_notifications) {
+  auto& notifications = store_pending_notifications[client_fd].object_notifications;
 
   int num_processed = 0;
   bool closed = false;
@@ -637,8 +653,8 @@ PlasmaStore::NotificationMap::iterator PlasmaStore::SendNotifications(
       // at the end of the method.
       // TODO(pcm): Introduce status codes and check in case the file descriptor
       // is added twice.
-      loop_->AddFileEvent(client_fd, kEventLoopWrite, [this, client_fd](int events) {
-        SendNotifications(pending_notifications_.find(client_fd));
+      loop_->AddFileEvent(client_fd, kEventLoopWrite, [this, client_fd, &store_pending_notifications](int events) {
+        SendNotifications(client_fd, store_pending_notifications);
       });
       break;
     } else {
@@ -661,18 +677,15 @@ PlasmaStore::NotificationMap::iterator PlasmaStore::SendNotifications(
   // Stop sending notifications if the pipe was broken.
   if (closed) {
     close(client_fd);
-    return pending_notifications_.erase(it);
-  } else {
-    return ++it;
+    store_pending_notifications.erase(client_fd);
   }
 }
 
-void PlasmaStore::PushNotification(fb::ObjectInfoT* object_info) {
-  auto it = pending_notifications_.begin();
-  while (it != pending_notifications_.end()) {
+void PlasmaStore::PushNotification(ObjectInfoT* object_info) {
+  for (auto& element : pending_notifications_) {
     auto notification = CreateObjectInfoBuffer(object_info);
-    it->second.object_notifications.emplace_back(std::move(notification));
-    it = SendNotifications(it);
+    element.second.object_notifications.emplace_back(std::move(notification));
+    SendNotifications(element.first, pending_notifications_);
   }
 }
 
@@ -681,7 +694,7 @@ void PlasmaStore::PushNotification(fb::ObjectInfoT* object_info, int client_fd) 
   if (it != pending_notifications_.end()) {
     auto notification = CreateObjectInfoBuffer(object_info);
     it->second.object_notifications.emplace_back(std::move(notification));
-    SendNotifications(it);
+    SendNotifications(it->first, pending_notifications_);
   }
 }
 
@@ -719,6 +732,123 @@ void PlasmaStore::SubscribeToUpdates(Client* client) {
       PushNotification(&info, fd);
     }
   }
+  SendNotifications(fd, pending_notifications_);
+}
+
+void PlasmaStore::PushQueueNotification(const ObjectID& object_id, PlasmaQueueItemInfoT* item_info) {
+  // Push notifications to clients which subscribed for updates from this queue.
+  auto& queue_info = queue_info_[object_id];
+  for (auto& element : queue_info.pending_queue_notifications) {
+    // Read last seal is found, check for the overlap item
+    int fd = element.first;
+    auto it = queue_info.read_queue_seal.find(fd);
+    if (it != queue_info.read_queue_seal.end() && item_info->seq_id <= it->second) {
+      continue;
+    }
+    auto notification = create_queue_item_buffer(item_info);
+    element.second.object_notifications.emplace_back(std::move(notification));
+    SendNotifications(fd, queue_info.pending_queue_notifications);
+  }
+}
+
+// Subscribe to notifications about sealed objects.
+void PlasmaStore::SubscribeToQueueUpdates(Client* client, const ObjectID& object_id) {
+  ARROW_LOG(DEBUG) << "subscribing to updates on fd " << client->fd;
+  // TODO(rkn): The store could block here if the client doesn't send a file
+  // descriptor.
+  int fd = recv_fd(client->fd);
+  if (fd < 0) {
+    // This may mean that the client died before sending the file descriptor.
+    ARROW_LOG(WARNING) << "Failed to receive file descriptor from client on fd "
+                       << client->fd << ".";
+    return;
+  }
+
+  queue_info_[object_id];
+  ARROW_CHECK(queue_info_.find(object_id) != queue_info_.end());
+  auto & queue_info = queue_info_[object_id];
+
+  // This is a reader and we should set the read seq id to 0
+  queue_info.client_last_read[client->fd] = 0;
+  queue_info.pending_queue_notifications[fd];
+
+  // Push all existing queue items to new subscriber.
+  // Try to get the queue object
+  auto entry = GetObjectTableEntry(&store_info_, object_id);
+  if(entry == NULL) {
+    ARROW_LOG(WARNING) << "The queue is not found when reading the existing items from queue.";
+    return;
+  }
+  uint8_t* addr = entry->pointer;
+  uint64_t queue_size = entry->data_size;
+
+  // Try to create the queue reader
+  QueueHeader *queue_header = reinterpret_cast<QueueHeader *>(addr);
+  uint64_t start_block_offset = queue_header->first_block_offset;
+  QueueBlockHeader *first_block_header = reinterpret_cast<QueueBlockHeader *>(addr+start_block_offset);
+  uint64_t start_seq_id = first_block_header->start_seq_id;
+  std::shared_ptr<arrow::Buffer> buf =
+    std::make_shared<arrow::MutableBuffer>(addr, queue_size);
+  std::unique_ptr<PlasmaQueueReader> queue_reader(
+    new PlasmaQueueReader(buf, start_block_offset, start_seq_id));
+
+  uint64_t last_sealed_seq_id = queue_reader->GetLastSeal();
+  // There is nothing to send
+  if (last_sealed_seq_id == 0) {
+    return;
+  }
+
+  // Send the notifications of existing items in the queue
+  PlasmaQueueItemInfoT item_info;
+  item_info.object_id = object_id.binary();
+  item_info.segment_index = -1;
+  uint32_t data_size;
+  uint8_t * data = nullptr;
+  uint64_t seq_id, data_offset, timestamp;
+  for(uint64_t i = start_seq_id; i <= last_sealed_seq_id; ++i) {
+    ARROW_CHECK_OK(queue_reader->GetNext(&data, &data_size, &data_offset, &seq_id, &timestamp));
+    item_info.seq_id = i;
+    item_info.data_offset = data_offset;
+    item_info.data_size = data_size;
+    auto notification = create_queue_item_buffer(&item_info);
+    // add notification to the struct
+    queue_info.pending_queue_notifications[fd].
+      object_notifications.emplace_back(std::move(notification));
+  }
+  SendNotifications(fd, queue_info.pending_queue_notifications);
+  queue_info.read_queue_seal[fd] = last_sealed_seq_id;
+}
+
+void PlasmaStore::EvictToQueueBlockCheck(const ObjectID &object_id, uint64_t seq_id,
+                                        bool& evict_answer, bool evict_without_client) {
+  evict_answer = true;
+  auto it = queue_info_.find(object_id);
+  ARROW_CHECK(it != queue_info_.end());
+
+  ARROW_LOG(INFO) << "try to evict queue id: " << object_id.hex() << ", evict seq id: " << seq_id;
+
+  if (evict_without_client == false && queue_info_[object_id].client_last_read.empty()) {
+    evict_answer = false;
+    return;
+  }
+
+  // TODO: just print evict message, delete after release
+  for (auto &element: queue_info_[object_id].client_last_read) {
+    ARROW_LOG(INFO) << "evict client id: " << element.first << ", last read seq: " << element.second;
+  }
+
+  for (auto &element: queue_info_[object_id].client_last_read) {
+    if (seq_id >= element.second) {
+      evict_answer = false;
+      break;
+    }
+  }
+}
+
+void PlasmaStore::UpdateQueueReadSeq(Client* client, const ObjectID& object_id, uint64_t seq_id) {
+  auto it = queue_info_.find(object_id);
+  ARROW_CHECK(it != queue_info_.end());
+  queue_info_[object_id].client_last_read[client->fd] = seq_id;
 }
 
 Status PlasmaStore::ProcessMessage(Client* client) {
@@ -732,17 +862,83 @@ Status PlasmaStore::ProcessMessage(Client* client) {
   PlasmaObject object;
   // TODO(pcm): Get rid of the following.
   memset(&object, 0, sizeof(object));
+  PlasmaQueueItemInfoT item_info;
 
   // Process the different types of requests.
   switch (type) {
+    case fb::MessageType::PlasmaCreateBatchRequest: {
+      std::vector<ObjectID> object_ids;
+      std::vector<uint64_t> data_sizes;
+      std::vector<PlasmaObject> objects;
+      std::vector<int64_t> mmap_sizes;
+      ObjectType object_type;
+      bool should_seal = false;
+
+      RETURN_NOT_OK(ReadCreateBatchRequest(input, input_size, object_ids, data_sizes, &object_type, &should_seal));
+
+      PlasmaError error_code;
+      for (int i = 0; i < object_ids.size(); i++) {
+        error_code =
+          CreateObject(object_ids[i], data_sizes[i], 0, 0, client, &object, object_type);
+        int64_t mmap_size = 0;
+        mmap_size = GetMmapSize(object.store_fd);
+
+        objects.push_back(object);
+        mmap_sizes.push_back(mmap_size);
+      }
+
+      HANDLE_SIGPIPE(
+          SendCreateBatchReply(client->fd, object_ids, objects, error_code, mmap_sizes),
+          client->fd);
+
+      for (int i = 0; i < object_ids.size(); i++) {
+        WarnIfSigpipe(send_fd(client->fd, objects[i].store_fd), client->fd);
+      }
+
+      if (should_seal) {
+        for (int i = 0; i < object_ids.size(); i++) {
+          unsigned char digest[kDigestSize];
+          SealObject(object_ids[i], &digest[0]);  
+        }
+      }
+    } break;
+
+
+
+    case fb::MessageType::PlasmaCreateQueueItemRequest: {
+      uint64_t seq_id;
+      uint64_t timestamp;
+      int64_t data_size;
+      RETURN_NOT_OK(ReadCreateQueueItemRequest(input, input_size, &object_id, &seq_id, 
+                                               &data_size, &timestamp));
+
+      auto writer = queue_info_[object_id].queue_writer_;
+      ARROW_CHECK(writer != nullptr);
+
+      bool try_to_evict = false, should_create_block;
+      uint64_t data_offset, start_offset;
+      auto status = writer->Append(nullptr, data_size, seq_id, data_offset,
+        start_offset, timestamp, should_create_block, try_to_evict);
+      ARROW_CHECK(status.ok());
+
+      auto error_code = PlasmaError::OK;
+      HANDLE_SIGPIPE(
+          SendCreateQueueItemReply(client->fd, object_id, seq_id, data_offset, error_code), 
+          client->fd);
+    } break;
+    case fb::MessageType::PlasmaSealQueueItemRequest: {
+      uint64_t seq_id;
+      RETURN_NOT_OK(ReadSealQueueItemRequest(input, input_size, &object_id, &seq_id));
+    } break;
     case fb::MessageType::PlasmaCreateRequest: {
       int64_t data_size;
       int64_t metadata_size;
       int device_num;
+      ObjectType object_type;
       RETURN_NOT_OK(ReadCreateRequest(input, input_size, &object_id, &data_size,
-                                      &metadata_size, &device_num));
+                                      &metadata_size, &device_num, &object_type));
       PlasmaError error_code =
-          CreateObject(object_id, data_size, metadata_size, device_num, client, &object);
+          CreateObject(object_id, data_size, metadata_size, device_num, client, &object, object_type);
       int64_t mmap_size = 0;
       if (error_code == PlasmaError::OK && device_num == 0) {
         mmap_size = GetMmapSize(object.store_fd);
@@ -808,17 +1004,37 @@ Status PlasmaStore::ProcessMessage(Client* client) {
       DeleteObjects(objects_to_evict);
       HANDLE_SIGPIPE(SendEvictReply(client->fd, num_bytes_evicted), client->fd);
     } break;
-    case fb::MessageType::PlasmaSubscribeRequest:
+    case fb::MessageType::PlasmaSubscribeRequest: {
       SubscribeToUpdates(client);
-      break;
-    case fb::MessageType::PlasmaConnectRequest: {
-      HANDLE_SIGPIPE(SendConnectReply(client->fd, store_info_.memory_capacity),
-                     client->fd);
+    }  break;
+    case fb::MessageType::PlasmaSubscribeQueueRequest: {
+      RETURN_NOT_OK(ReadSubscribeQueueRequest(input, input_size, &object_id));
+      SubscribeToQueueUpdates(client, object_id);
     } break;
-    case fb::MessageType::PlasmaDisconnectClient:
+    case fb::MessageType::PlasmaEvictQueueBlockRequest: {
+      bool evict_answer, evict_without_client;
+      uint64_t evict_seq_id;
+      RETURN_NOT_OK(ReadEvictQueueBlockRequest(input, input_size, &object_id, &evict_seq_id, &evict_without_client));
+      EvictToQueueBlockCheck(object_id, evict_seq_id, evict_answer, evict_without_client);
+      HANDLE_SIGPIPE(SendEvictQueueBlockReply(client->fd, evict_answer), client->fd);
+    } break;
+    case fb::MessageType::PlasmaConsumedItemNotification: {
+      uint64_t update_seq_id;
+      RETURN_NOT_OK(ReadConsumedItemNotification(input, input_size, &object_id, &update_seq_id));
+      UpdateQueueReadSeq(client, object_id, update_seq_id);
+    } break;
+    case fb::MessageType::PlasmaConnectRequest: {
+      HANDLE_SIGPIPE(SendConnectReply(client->fd, store_info_.memory_capacity), client->fd);
+    } break;
+    case fb::MessageType::PlasmaDisconnectClient: {
       ARROW_LOG(DEBUG) << "Disconnecting client on fd " << client->fd;
       DisconnectClient(client->fd);
-      break;
+    } break;
+    case MessageType::PlasmaQueueItemInfo: {
+      RETURN_NOT_OK(ReadQueueItemInfo(input, input_size, &item_info));
+      PushQueueNotification(ObjectID::from_binary(item_info.object_id), &item_info);
+    } break;
+
     default:
       // This code should be unreachable.
       ARROW_CHECK(0);
