@@ -102,13 +102,13 @@ JNIEXPORT jobject JNICALL Java_org_apache_arrow_plasma_PlasmaClientJNI_create(
   std::shared_ptr<Buffer> data;
   Status s = client->Create(oid, size, md, md_size, &data);
   if (s.IsPlasmaObjectExists()) {
-    jclass Exception = env->FindClass("java/lang/Exception");
+    jclass Exception = env->FindClass("org/apache/arrow/plasma/exceptions/DuplicateObjectException");
     env->ThrowNew(Exception,
                   "An object with this ID already exists in the plasma store.");
     return nullptr;
   }
   if (s.IsPlasmaStoreFull()) {
-    jclass Exception = env->FindClass("java/lang/Exception");
+    jclass Exception = env->FindClass("org/apache/arrow/plasma/exceptions/PlasmaOutOfMemoryException");
     env->ThrowNew(Exception,
                   "The plasma store ran out of memory and could not create this object.");
     return nullptr;
