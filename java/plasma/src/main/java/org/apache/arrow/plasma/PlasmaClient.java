@@ -46,19 +46,19 @@ public class PlasmaClient implements ObjectStoreLink {
 
   // interface methods --------------------
 
+  /**
+   * don't catch exception, exception dealt with in raylet
+   * @param objectId The object ID of the value to be put.
+   * @param value The value to put in the object store.
+   * @param metadata encodes whatever metadata the user wishes to encode.
+   *
+   */
   @Override
   public void put(byte[] objectId, byte[] value, byte[] metadata) {
-    ByteBuffer buf = null;
-    try {
-      buf = PlasmaClientJNI.create(conn, objectId, value.length, metadata);
-    } catch (Exception e) {
-      System.err.println("ObjectId " + objectId + " error at PlasmaClient put");
-      e.printStackTrace();
-    }
+    ByteBuffer buf = PlasmaClientJNI.create(conn, objectId, value.length, metadata);
     if (buf == null) {
       return;
     }
-
     buf.put(value);
     PlasmaClientJNI.seal(conn, objectId);
     PlasmaClientJNI.release(conn, objectId);
