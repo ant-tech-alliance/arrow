@@ -33,6 +33,6 @@ export PLASMA_STORE=${ARROW_CPP_INSTALL}/bin/plasma_store_server
 
 ldd $PLASMA_STORE
 
-java -cp target/test-classes:target/classes -Djava.library.path=${TRAVIS_BUILD_DIR}/cpp-build/debug/ org.apache.arrow.plasma.PlasmaClientTest
+java -cp target/test-classes:target/classes -Djava.library.path=${TRAVIS_BUILD_DIR}/cpp-build/debug/:~/.m2/repository/ org.apache.arrow.plasma.PlasmaClientTest
 
 popd
