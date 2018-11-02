@@ -82,7 +82,7 @@ typedef google::LogMessage LoggingProvider;
 typedef CerrLog LoggingProvider;
 #endif
 
-ArrowLogLevel ArrowLog::severity_threshold_ = ArrowLogLevel::ARROW_INFO;
+//ArrowLogLevel ArrowLog::severity_threshold_ = ArrowLogLevel::ARROW_INFO;
 //std::unique_ptr<std::string> ArrowLog::app_name_;
 
 #ifdef ARROW_USE_GLOG
@@ -112,10 +112,11 @@ static int GetMappedSeverity(ArrowLogLevel severity) {
 void ArrowLog::StartArrowLog(const char *app_name,
                              ArrowLogLevel severity_threshold,
                              const std::string& log_dir) {
-  severity_threshold_ = severity_threshold;
+  //severity_threshold_ = severity_threshold;
+  SetSeverityThreshold(severity_threshold);
 
 #ifdef ARROW_USE_GLOG
-  int mapped_severity_threshold = GetMappedSeverity(severity_threshold_);
+  int mapped_severity_threshold = GetMappedSeverity(GetSeverityThreshold());
   google::InitGoogleLogging(app_name);
   google::SetStderrLogging(mapped_severity_threshold);
   // Enble log file if log_dir is not empty.
@@ -152,9 +153,18 @@ void ArrowLog::InstallFailureSignalHandler() {
 #endif
 }
 
+ArrowLogLevel ArrowLog::GetSeverityThreshold() {
+  static ArrowLogLevel level_;
+  return level_;
+}
+
+void ArrowLog::SetSeverityThreshold(ArrowLogLevel level) {
+  static ArrowLogLevel level_ = level;
+}
+
 ArrowLog::ArrowLog(const char* file_name, int line_number, ArrowLogLevel severity)
     // glog does not have DEBUG level, we can handle it using is_enabled_.
-    : logging_provider_(nullptr), is_enabled_(severity >= severity_threshold_) {
+    : logging_provider_(nullptr), is_enabled_(severity >= GetSeverityThreshold()) {
 #ifdef ARROW_USE_GLOG
   if (is_enabled_) {
     logging_provider_ =

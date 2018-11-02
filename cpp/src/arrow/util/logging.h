@@ -154,6 +154,10 @@ class ARROW_EXPORT ArrowLog : public ArrowLogBase {
   /// If glog is not installed, this function won't do anything.
   static void InstallFailureSignalHandler();
 
+  static ArrowLogLevel GetSeverityThreshold();
+
+  static void SetSeverityThreshold(ArrowLogLevel level);
+
  private:
   // Hide the implementation of log provider by void *.
   // Otherwise, lib user may define the same macro to use the correct header file.
@@ -161,7 +165,7 @@ class ARROW_EXPORT ArrowLog : public ArrowLogBase {
   /// True if log messages should be logged and false if they should be ignored.
   bool is_enabled_;
 
-  static ArrowLogLevel severity_threshold_;
+  //static ArrowLogLevel severity_threshold_;
   // In InitGoogleLogging, it simply keeps the pointer.
   // We need to make sure the app name passed to InitGoogleLogging exist.
   //static std::unique_ptr<std::string> app_name_;
