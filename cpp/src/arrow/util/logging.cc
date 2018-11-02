@@ -83,7 +83,7 @@ typedef CerrLog LoggingProvider;
 #endif
 
 ArrowLogLevel ArrowLog::severity_threshold_ = ArrowLogLevel::ARROW_INFO;
-std::unique_ptr<std::string> ArrowLog::app_name_;
+//std::unique_ptr<std::string> ArrowLog::app_name_;
 
 #ifdef ARROW_USE_GLOG
 
@@ -109,14 +109,14 @@ static int GetMappedSeverity(ArrowLogLevel severity) {
 
 #endif
 
-void ArrowLog::StartArrowLog(const std::string& app_name,
+void ArrowLog::StartArrowLog(const char *app_name,
                              ArrowLogLevel severity_threshold,
                              const std::string& log_dir) {
   severity_threshold_ = severity_threshold;
-  app_name_.reset(new std::string(app_name.c_str()));
+
 #ifdef ARROW_USE_GLOG
   int mapped_severity_threshold = GetMappedSeverity(severity_threshold_);
-  google::InitGoogleLogging(app_name_->c_str());
+  google::InitGoogleLogging(app_name);
   google::SetStderrLogging(mapped_severity_threshold);
   // Enble log file if log_dir is not empty.
   if (!log_dir.empty()) {
@@ -124,14 +124,14 @@ void ArrowLog::StartArrowLog(const std::string& app_name,
     if (log_dir[log_dir.length() - 1] != '/') {
       dir_ends_with_slash += "/";
     }
-    auto app_name_without_path = app_name;
-    if (app_name.empty()) {
+    std::string app_name_without_path = app_name;
+    if (app_name == nullptr || strlen(app_name) == 0) {
       app_name_without_path = "DefaultApp";
     } else {
       // Find the app name without the path.
-      size_t pos = app_name.rfind('/');
-      if (pos != app_name.npos && pos + 1 < app_name.length()) {
-        app_name_without_path = app_name.substr(pos + 1);
+      size_t pos = app_name_without_path.rfind('/');
+      if (pos != app_name_without_path.npos && pos + 1 < app_name_without_path.length()) {
+        app_name_without_path = app_name_without_path.substr(pos + 1);
       }
     }
     google::SetLogFilenameExtension(app_name_without_path.c_str());
