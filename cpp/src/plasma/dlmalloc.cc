@@ -104,7 +104,7 @@ int create_buffer(int64_t size) {
     // needed for files that are backed by the huge page fs, see also
     // http://www.mail-archive.com/kvm-devel@lists.sourceforge.net/msg14737.html
     if (ftruncate(fd, (off_t)size) != 0) {
-      ARROW_LOG(FATAL) << "failed to ftruncate file " << &file_name[0];
+      ARROW_LOG(FATAL) << "failed to ftruncate file " << &file_name[0] << " " << strerror(errno) << " " << size;
       return -1;
     }
   }
